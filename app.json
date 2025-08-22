@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "WarehouseManagement",
+    "slug": "warehouse-management",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "splash": {
+      "image": "./assets/images/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.tristatebearing.warehousemanagement"
+    },
+    "android": {
+      "package": "com.tristatebearing.warehousemanagement",
+      "versionCode": 1,
+      "permissions": []
+    },
+    "extra": {
+      "eas": {
+        "projectId": "c9bde9f0-4dd0-4a40-8d26-2193c89e2452"
+      }
+    }
+  }
+}
