@@ -9,7 +9,7 @@ import { colors } from '@/constants/colors';
 import { useAuth } from '@/hooks/auth-store';
 import { Warehouse } from 'lucide-react-native';
 
-const VALID_USERNAMES = new Set(['TSB2108', 'JMH', 'SUH', 'TSB']);
+const VALID_USERNAMES = new Set(['TSB2108', 'TSB414', 'TSB211', 'TSB1609', 'TSB5117', 'TSB1800', 'TSB2205', 'TSB1115', 'TSB1216', 'TSB716']);
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -74,8 +74,8 @@ export default function LoginScreen() {
         <View style={styles.content}>
           <View style={styles.logoContainer}>
             <Warehouse size={64} color={colors.primary} />
-            <Text style={styles.title}>VentX</Text>
-            <Text style={styles.subtitle}>Inventory Management System</Text>
+            <Text style={styles.title}>TriZen</Text>
+            <Text style={styles.subtitle}>The Chillest Inventory System</Text>
           </View>
 
           <View style={styles.formContainer}>

@@ -8,8 +8,8 @@ export interface BaseRecord {
 
 export interface Warehouse extends BaseRecord {
   name: string;
-  
   qrOnly?: boolean;
+  storeId?: string;
 }
 
 export interface Product extends BaseRecord {
@@ -22,6 +22,7 @@ export interface Product extends BaseRecord {
   maxAmount: number;
   quantity: number;
   warehouseId: string;
+  storeId?: string;
 }
 
 export interface WarehouseFile {

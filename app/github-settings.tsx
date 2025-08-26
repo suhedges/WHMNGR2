@@ -9,10 +9,11 @@ import {
 } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft, Github, Trash2, RefreshCw } from 'lucide-react-native';
+import { ArrowLeft, Github, Trash2, RefreshCw, RotateCcw } from 'lucide-react-native';
 import { Input } from '@/components/Input';
 import { Button } from '@/components/Button';
 import { useWarehouse } from '@/hooks/warehouse-store';
+import { useAuth } from '@/hooks/auth-store';
 import { SyncStatus } from '@/components/SyncStatus';
 
 export default function GitHubSettingsScreen() {
@@ -22,8 +23,10 @@ export default function GitHubSettingsScreen() {
     disconnectGitHub, 
     performSync, 
     syncStatus,
-    lastSyncTime 
+    lastSyncTime,
+    resetSyncSnapshot,
   } = useWarehouse();
+  const { user } = useAuth();
   
   const [token, setToken] = useState<string>(githubConfig?.token || '');
   const [owner, setOwner] = useState<string>(githubConfig?.owner || '');
@@ -85,12 +88,12 @@ export default function GitHubSettingsScreen() {
     try {
       setIsLoading(true);
       await performSync();
-      Alert.alert('Success', 'Manual sync completed successfully!');
+      Alert.alert('Success', 'Manual push completed successfully!');
     } catch (error) {
-      console.error('Manual sync failed:', error);
+      console.error('Manual push failed:', error);
       Alert.alert(
-        'Sync Failed', 
-        error instanceof Error ? error.message : 'Failed to sync with GitHub'
+        'Push Failed', 
+        error instanceof Error ? error.message : 'Failed to push to GitHub'
       );
     } finally {
       setIsLoading(false);
@@ -135,11 +138,33 @@ export default function GitHubSettingsScreen() {
             </Text>
             
             <Button
-              title="Manual Sync"
+              title="Manual Push"
               onPress={handleManualSync}
               disabled={isLoading || syncStatus === 'syncing'}
               style={styles.syncButton}
               icon={<RefreshCw size={20} color="#fff" />}
+            />
+          </View>
+        )}
+
+        {githubConfig && (
+          <View style={styles.statusSection}>
+            <Text style={styles.sectionTitle}>Advanced</Text>
+            <Button
+              title="Reset Sync Snapshot"
+              onPress={async () => {
+                try {
+                  setIsLoading(true);
+                  await resetSyncSnapshot();
+                  Alert.alert('Snapshot Reset', 'Base snapshot cleared. Next sync will treat current local data as baseline.');
+                } catch (e) {
+                  Alert.alert('Error', e instanceof Error ? e.message : 'Failed to reset');
+                } finally {
+                  setIsLoading(false);
+                }
+              }}
+              variant="outline"
+              icon={<RotateCcw size={20} color="#0366d6" />}
             />
           </View>
         )}
@@ -180,7 +205,7 @@ export default function GitHubSettingsScreen() {
             <Text style={styles.helpItem}>1. Create a GitHub repository</Text>
             <Text style={styles.helpItem}>2. Generate a Personal Access Token with &apos;repo&apos; permissions</Text>
             <Text style={styles.helpItem}>3. Enter your token, username, and repository name above</Text>
-            <Text style={styles.helpItem}>4. Data will be saved as &apos;warehouse-data.json&apos; in your repo</Text>
+            <Text style={styles.helpItem}>4. Data file per user: &apos;warehouse-data-{'{username}'}.json&apos; (current: &apos;warehouse-data-&apos; + {(user?.username ?? 'local')} + &apos;.json&apos;)</Text>
           </View>
         </View>
 

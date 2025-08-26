@@ -1,12 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Product, Warehouse, WarehouseFile, RecordConflict } from '@/types';
-import { mergeRecords } from './merge-records';
 
 const GITHUB_TOKEN_KEY = 'github_token';
 const GITHUB_REPO_KEY = 'github_repo';
 const GITHUB_OWNER_KEY = 'github_owner';
-const DATA_FILE_PATH = 'warehouse-data.json';
-const BASE_SNAPSHOT_KEY = 'github_base_snapshot';
 
 export interface GitHubConfig {
   token: string;
@@ -15,22 +12,60 @@ export interface GitHubConfig {
 }
 
 function stableStringify(v: any): string {
+  if (v === undefined) return 'null';
   if (v === null || typeof v !== 'object') return JSON.stringify(v);
-  if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']';
-  const keys = Object.keys(v).sort();
-  return '{' + keys.map(k => JSON.stringify(k) + ':' + stableStringify(v[k])).join(',') + '}';
+  if (Array.isArray(v)) return '[' + v.map((item) => (item === undefined ? 'null' : stableStringify(item))).join(',') + ']';
+  const keys = Object.keys(v).filter((k) => (v as any)[k] !== undefined).sort();
+  return '{' + keys.map(k => JSON.stringify(k) + ':' + stableStringify((v as any)[k])).join(',') + '}';
 }
 
-function getLatestTimestamp(file: WarehouseFile): number {
-  const times = [
-    ...file.warehouses.map(w => Date.parse(w.updatedAt)),
-    ...file.products.map(p => Date.parse(p.updatedAt)),
-  ].filter(n => !isNaN(n));
-  return times.length > 0 ? Math.max(...times) : 0;
+function sanitizeForJson<T = any>(value: T): T {
+  if (value === undefined) return null as unknown as T;
+  if (value === null || typeof value !== 'object') return value as T;
+  if (Array.isArray(value)) return value.map((item) => (item === undefined ? null : sanitizeForJson(item))) as unknown as T;
+  const out: Record<string, any> = {};
+  Object.keys(value as Record<string, any>).forEach((k) => {
+    const v = (value as Record<string, any>)[k];
+    if (v !== undefined) {
+      out[k] = sanitizeForJson(v);
+    }
+  });
+  return out as T;
+}
+
+function isWarehouseFile(v: unknown): v is WarehouseFile {
+  const obj = v as WarehouseFile | null;
+  return !!obj && typeof obj === 'object' && !!(obj as any).meta && Array.isArray((obj as any).warehouses) && Array.isArray((obj as any).products);
+}
+
+function safeParseJson<T>(text: string | null | undefined, fallback: T): T {
+  try {
+    if (!text) return fallback;
+    const trimmed = text.trim();
+    if (trimmed.length === 0 || trimmed === 'undefined') return fallback;
+    const parsed = JSON.parse(trimmed) as unknown;
+    return (parsed ?? fallback) as T;
+  } catch (e) {
+    console.warn('safeParseJson failed, using fallback', e);
+    return fallback;
+  }
 }
 
 export class GitHubSyncService {
   private config: GitHubConfig | null = null;
+  private username: string = 'local';
+
+  setUser(username: string | null) {
+    this.username = (username && username.trim().length > 0) ? username.trim() : 'local';
+  }
+
+  private get dataFilePath(): string {
+    return `warehouse-data-${this.username}.json`;
+  }
+
+  private get baseSnapshotKey(): string {
+    return `github_base_snapshot_${this.username}`;
+  }
 
   async loadConfig(): Promise<GitHubConfig | null> {
     try {
@@ -78,9 +113,9 @@ export class GitHubSyncService {
     const response = await fetch(url, {
       ...options,
       headers: {
-        'Authorization': `Bearer ${this.config.token}`,
-        'Accept': 'application/vnd.github+json',         // recommended
-        'X-GitHub-Api-Version': '2022-11-28',            // recommended
+        Authorization: `Bearer ${this.config.token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
         'Content-Type': 'application/json',
         ...(options.headers || {}),
       },
@@ -93,7 +128,7 @@ export class GitHubSyncService {
       const delay = retryAfter > 0 ? retryAfter : Math.pow(2, attempt) * 1000;
       await new Promise(resolve => setTimeout(resolve, delay));
       return this.makeGitHubRequest(endpoint, options, attempt + 1);
-    }    
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -104,15 +139,23 @@ export class GitHubSyncService {
 
   async downloadData(): Promise<{ data: WarehouseFile; sha: string } | null> {
     try {
-      const response = await this.makeGitHubRequest(`contents/${DATA_FILE_PATH}`);
+      const response = await this.makeGitHubRequest(`contents/${this.dataFilePath}`);
       const file = await response.json();
-      if (file.content) {
-        const decoded = atob(file.content.replace(/\n/g, ''));
-        const json = JSON.parse(decoded);
-        return { data: json, sha: file.sha };
+      if (file?.content) {
+        const decoded = atob(String(file.content).replace(/\n/g, ''));
+        try {
+          const json = JSON.parse(decoded);
+          if (!isWarehouseFile(json)) throw new Error('Invalid shape');
+          return { data: json, sha: String(file.sha) };
+        } catch (e) {
+          console.warn('downloadData: JSON parse failed, attempting to repair', e);
+          const repaired = decoded.replace(/\bundefined\b/g, 'null');
+          const json = JSON.parse(repaired);
+          if (!isWarehouseFile(json)) throw new Error('Invalid shape after repair');
+          return { data: json, sha: String(file.sha) };
+        }
       }
     } catch (error) {
-
       if (error instanceof Error && error.message.includes('404')) {
         return null;
       }
@@ -121,65 +164,11 @@ export class GitHubSyncService {
     return null;
   }
 
-
-
   async syncData(
     localWarehouses: Warehouse[],
     localProducts: Product[],
   ): Promise<{ warehouses: Warehouse[]; products: Product[]; conflicts: RecordConflict[] }> {
-    if (!this.config) {
-      throw new Error('GitHub configuration not set');
-    }
-
-    const baseRaw = await AsyncStorage.getItem(BASE_SNAPSHOT_KEY);
-
-    const remote = await this.downloadData();
-    const remoteData: WarehouseFile = remote?.data || { meta: { schemaVersion: 1 }, warehouses: [], products: [] };
-    const remoteSha = remote?.sha || null;
-
-    // First sync: decide whether to pull or push
-    if (!baseRaw) {
-      const localFile: WarehouseFile = {
-        meta: remoteData.meta || { schemaVersion: 1 },
-        warehouses: localWarehouses,
-        products: localProducts,
-      };
-      const localLatest = getLatestTimestamp(localFile);
-      const remoteLatest = getLatestTimestamp(remoteData);
-
-      if (remoteLatest > localLatest) {
-        await AsyncStorage.setItem(BASE_SNAPSHOT_KEY, JSON.stringify(remoteData));
-        return { warehouses: remoteData.warehouses, products: remoteData.products, conflicts: [] };
-      }
-
-      await this.uploadData(localFile, remoteSha);
-      await AsyncStorage.setItem(BASE_SNAPSHOT_KEY, JSON.stringify(localFile));
-      return { warehouses: localWarehouses, products: localProducts, conflicts: [] };
-    }
-
-    const base: WarehouseFile = JSON.parse(baseRaw);
-
-    const w = mergeRecords(base.warehouses, localWarehouses, remoteData.warehouses, 'warehouse');
-    const p = mergeRecords(base.products, localProducts, remoteData.products, 'product');
-
-    const merged: WarehouseFile = {
-      meta: remoteData.meta || { schemaVersion: 1 },
-      warehouses: w.records,
-      products: p.records,
-    };
-
-    const conflicts = [...w.conflicts, ...p.conflicts];
-
-    await AsyncStorage.setItem(BASE_SNAPSHOT_KEY, JSON.stringify(remoteData));
-
-    if (conflicts.length > 0) {
-      return { warehouses: merged.warehouses, products: merged.products, conflicts };
-    }
-
-    await this.uploadData(merged, remoteSha);
-    await AsyncStorage.setItem(BASE_SNAPSHOT_KEY, JSON.stringify(merged));
-
-    return { warehouses: merged.warehouses, products: merged.products, conflicts: [] };
+    throw new Error('syncData is deprecated. Use pullRemoteOnLogin() and pushLocalOnly()');
   }
 
   isConfigured(): boolean {
@@ -191,37 +180,90 @@ export class GitHubSyncService {
   }
 
   private async getRemoteFile(): Promise<{ sha: string; text: string } | null> {
-    const res = await this.makeGitHubRequest(`contents/${DATA_FILE_PATH}`, { method: 'GET' });
-    const json = await res.json();
-    if (!json?.content || !json?.sha) return null;
-    const remoteBytes = atob(String(json.content).replace(/\n/g, ''));
-    return { sha: String(json.sha), text: remoteBytes };
+    try {
+      const res = await this.makeGitHubRequest(`contents/${this.dataFilePath}`, { method: 'GET' });
+      const json = await res.json();
+      if (!json?.content || !json?.sha) return null;
+      const remoteBytes = atob(String(json.content).replace(/\n/g, ''));
+      return { sha: String(json.sha), text: remoteBytes };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('404')) {
+        console.log('getRemoteFile: file not found on GitHub, will create on next upload', this.dataFilePath);
+        return null;
+      }
+      console.error('getRemoteFile failed', e);
+      throw e as Error;
+    }
   }
 
-  // Only PUT when different
   async uploadData(data: WarehouseFile, currentSha: string | null): Promise<string> {
-    const desiredText = stableStringify(data);     // deterministic text
-    const remote = await this.getRemoteFile();     // latest from GitHub
+    const sanitized = sanitizeForJson<WarehouseFile>(data);
+    const desiredText = stableStringify(sanitized);
+    const remote = await this.getRemoteFile();
 
-    // no-op if identical
     if (remote && remote.text === desiredText) {
-      return remote.sha; // nothing to do
+      return remote.sha;
     }
 
-    const body: any = {
-      message: 'Update warehouse data',            // avoid timestamps to prevent churn
+    const body: Record<string, any> = {
+      message: 'Update warehouse data',
       content: btoa(desiredText),
     };
     if (remote?.sha || currentSha) body.sha = remote?.sha ?? currentSha;
 
-    const res = await this.makeGitHubRequest(`contents/${DATA_FILE_PATH}`, {
+    const res = await this.makeGitHubRequest(`contents/${this.dataFilePath}`, {
       method: 'PUT',
       body: JSON.stringify(body),
     });
     const result = await res.json();
-    return result.content.sha as string;
-  }  
-  
+    return (result?.content?.sha ?? '') as string;
+  }
+
+  async resetBaseSnapshot(): Promise<void> {
+    try {
+      await AsyncStorage.removeItem(this.baseSnapshotKey);
+      console.log('GitHubSyncService: BASE_SNAPSHOT reset for', this.username);
+    } catch (e) {
+      console.error('GitHubSyncService: Failed to reset BASE_SNAPSHOT', e);
+      throw e as Error;
+    }
+  }
+
+  async setBaseSnapshot(data: WarehouseFile): Promise<void> {
+    try {
+      await AsyncStorage.setItem(this.baseSnapshotKey, JSON.stringify(sanitizeForJson(data)));
+    } catch (e) {
+      console.error('GitHubSyncService: Failed to set BASE_SNAPSHOT', e);
+      throw e as Error;
+    }
+  }
+
+  async pullRemoteOnLogin(): Promise<WarehouseFile | null> {
+    const defaultFile: WarehouseFile = { meta: { schemaVersion: 1 }, warehouses: [], products: [] };
+    const remote = await this.downloadData();
+    if (!remote) {
+      return null;
+    }
+    const remoteData: WarehouseFile = isWarehouseFile(remote.data) ? remote.data : defaultFile;
+    await this.setBaseSnapshot(remoteData);
+    return remoteData;
+  }
+
+  async pushLocalOnly(localWarehouses: Warehouse[], localProducts: Product[]): Promise<void> {
+    if (!this.config) {
+      throw new Error('GitHub configuration not set');
+    }
+    const data: WarehouseFile = {
+      meta: { schemaVersion: 1 },
+      warehouses: localWarehouses,
+      products: localProducts,
+    };
+    const remote = await this.downloadData();
+    const newSha = await this.uploadData(data, remote?.sha ?? null);
+    await this.setBaseSnapshot(data);
+    console.log('pushLocalOnly: uploaded with sha', newSha);
+  }
 }
 
 export const githubSync = new GitHubSyncService();

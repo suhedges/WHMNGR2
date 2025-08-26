@@ -2,9 +2,9 @@
 
 # 
 
-# This project stores each user's warehouses in separate JSON files in
+# This project keeps warehouse and product data in a single JSON file stored in
 
-# GitHub (e.g. `users/<username>/<warehouseId>.json`). Multiple users may work on the data concurrently. The sync layer uses a
+# GitHub. Multiple users may work on the data concurrently.  The sync layer uses a
 
 # three-way merge with optimistic concurrency and per-field conflict detection.
 
@@ -16,8 +16,7 @@
 
 # Add the new metadata (`version`, `updatedAt`, `updatedBy`, `deleted` and
 
-# top‑level `meta`) to a legacy `warehouse-data.json` by running:
-
+# top‑level `meta`) to an existing `warehouse-data.json` by running:
 
 # 
 
